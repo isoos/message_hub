@@ -1,0 +1,11 @@
+name: message_hub
+description: A messaging hub abstraction for service workers, web workers, web sockets and console apps.
+version: 0.0.1
+
+environment:
+  sdk: '>=1.0.0 <2.0.0'
+
+dependencies:
+
+dev_dependencies:
+  service_worker: ^0.0.8
