@@ -1,10 +1,51 @@
 import 'dart:async';
+import 'dart:collection';
 
 typedef Future<S> AsyncFunction<Q, S>(Q request);
 typedef O WireAdapter<I, O>(I input);
 
-abstract class MessageHub {
+abstract class Adapter<T, W> {
+  bool accept(T object);
 
+  W encode(T object);
+  T decode(W data);
+}
+
+class IdentityAdapter<T> implements Adapter<T, T> {
+  @override
+  bool accept(T object) =>
+      object == null ||
+      (object is num) ||
+      (object is bool) ||
+      (object is String);
+
+  @override
+  T encode(T object) => object;
+
+  @override
+  T decode(T data) => data;
+}
+
+abstract class AnotherMessageHub {
+  void registerAdapter(String type, Adapter adapter);
+
+  Stream<T> onMessage<T>(String type);
+
+  Stream<RS> invoke<RQ, RS>(RQ request);
+
+  Future<RS> call<RQ, RS>(RQ request);
+
+  void registerHandler<RQ, RS>(
+      String requestType, void handleRequest(RQ request, Sink<RS> replySink));
+
+  Future start();
+
+  Queue<Message> get deadLetterQueue;
+
+  Future stop();
+}
+
+abstract class MessageHub {
   AsyncFunction<Q, S> registerFunction<Q, S>(
     String type, {
     WireAdapter<Q, dynamic> requestEncoder,
