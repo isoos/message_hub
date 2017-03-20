@@ -7,22 +7,22 @@ import 'package:service_worker/window.dart' as sw;
 
 class ServiceWorkerWindowMessageHub extends MessageHubBase {
   @override
-  Stream<Message> get onMessage =>
+  Stream<Envelope> get onEnvelope =>
       sw.onMessage.transform(new StreamTransformer.fromHandlers(
-          handleData: (sw.MessageEvent event, EventSink<Message> sink) {
+          handleData: (sw.MessageEvent event, EventSink<Envelope> sink) {
         if (event.data is Map) {
           Map map = event.data;
-          sink.add(new Message.fromMap(map));
+          sink.add(new Envelope.fromMap(map));
         }
       }));
 
   @override
-  Future postMessage(Message message) async {
+  Future postEnvelope(Envelope envelope) async {
     sw.ServiceWorkerRegistration registration = await sw.ready;
     List transfer;
-    if (message.data is ByteBuffer) {
-      transfer = [message.data];
+    if (envelope.data is ByteBuffer) {
+      transfer = [envelope.data];
     }
-    registration.active.postMessage(message.toMap(), transfer);
+    registration.active.postMessage(envelope.toMap(), transfer);
   }
 }

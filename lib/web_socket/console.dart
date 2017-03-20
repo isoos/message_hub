@@ -9,17 +9,17 @@ class WebSocketConsoleMessageHub extends MessageHubBase {
   WebSocketConsoleMessageHub(this._socket);
 
   @override
-  Stream<Message> get onMessage =>
+  Stream<Envelope> get onEnvelope =>
       _socket.transform(new StreamTransformer.fromHandlers(
-          handleData: (event, EventSink<Message> sink) {
+          handleData: (event, EventSink<Envelope> sink) {
         if (event is String) {
           Map map = JSON.decode(event);
-          sink.add(new Message.fromMap(map));
+          sink.add(new Envelope.fromMap(map));
         }
       }));
 
   @override
-  Future postMessage(Message message) async {
-    _socket.add(JSON.encode(message.toMap()));
+  Future postEnvelope(Envelope envelope) async {
+    _socket.add(JSON.encode(envelope.toMap()));
   }
 }

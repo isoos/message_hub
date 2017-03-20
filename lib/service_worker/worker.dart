@@ -7,28 +7,28 @@ import 'package:service_worker/worker.dart' as sw;
 
 class ServiceWorkerMessageHub extends MessageHubBase {
   @override
-  Stream<Message> get onMessage =>
+  Stream<Envelope> get onEnvelope =>
       sw.onMessage.transform(new StreamTransformer.fromHandlers(handleData:
-          (sw.ExtendableMessageEvent event, EventSink<Message> sink) {
+          (sw.ExtendableMessageEvent event, EventSink<Envelope> sink) {
         if (event.data is Map) {
           Map map = event.data;
-          sink.add(new Message.fromMap(map, client: event.source));
+          sink.add(new Envelope.fromMap(map, client: event.source));
         }
       }));
 
   @override
-  Future postMessage(Message message) async {
-    if (message.client != null) {
+  Future postEnvelope(Envelope envelope) async {
+    if (envelope.client != null) {
       List transfer;
-      if (message.data is ByteBuffer) {
-        transfer = [message.data];
+      if (envelope.data is ByteBuffer) {
+        transfer = [envelope.data];
       }
-      sw.ServiceWorkerClient client = message.client;
-      client.postMessage(message.toMap(), transfer);
+      sw.ServiceWorkerClient client = envelope.client;
+      client.postMessage(envelope.toMap(), transfer);
     } else {
       List<sw.ServiceWorkerClient> clients = await sw.clients.matchAll();
       for (var client in clients) {
-        client.postMessage(message.toMap());
+        client.postMessage(envelope.toMap());
       }
     }
   }
