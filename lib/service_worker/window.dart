@@ -5,24 +5,25 @@ import '../message_hub.dart';
 
 import 'package:service_worker/window.dart' as sw;
 
-class ServiceWorkerWindowMessageHub extends MessageHubBase {
+/// A [DuplexChannel] that handles the ServiceWorker's Window-side.
+class ServiceWorkerWindowChannel extends DuplexChannel {
   @override
-  Stream<Envelope> get onEnvelope =>
+  Stream<Packet> get onPacket =>
       sw.onMessage.transform(new StreamTransformer.fromHandlers(
-          handleData: (sw.MessageEvent event, EventSink<Envelope> sink) {
+          handleData: (sw.MessageEvent event, EventSink<Packet> sink) {
         if (event.data is Map) {
           Map map = event.data;
-          sink.add(new Envelope.fromMap(map));
+          sink.add(new Packet.fromMap(map));
         }
       }));
 
   @override
-  Future postEnvelope(Envelope envelope) async {
-    sw.ServiceWorkerRegistration registration = await sw.ready;
+  Future send(Packet packet) async {
     List transfer;
-    if (envelope.data is ByteBuffer) {
-      transfer = [envelope.data];
+    if (packet.data is ByteBuffer) {
+      transfer = [packet.data];
     }
-    registration.active.postMessage(envelope.toMap(), transfer);
+    sw.ServiceWorkerRegistration registration = await sw.ready;
+    registration.active.postMessage(packet.toMap(), transfer);
   }
 }

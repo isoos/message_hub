@@ -3,22 +3,22 @@ import 'dart:html';
 
 import '../message_hub.dart';
 
-class WebWorkerMessageHub extends MessageHubBase {
+class WebWorkerChannel extends DuplexChannel {
   final Worker _worker;
-  WebWorkerMessageHub(this._worker);
+  WebWorkerChannel(this._worker);
 
   @override
-  Stream<Envelope> get onEnvelope =>
+  Stream<Packet> get onPacket =>
       _worker.onMessage.transform(new StreamTransformer.fromHandlers(
-          handleData: (MessageEvent event, EventSink<Envelope> sink) {
+          handleData: (MessageEvent event, EventSink<Packet> sink) {
         if (event.data is Map) {
           Map map = event.data;
-          sink.add(new Envelope.fromMap(map));
+          sink.add(new Packet.fromMap(map));
         }
       }));
 
   @override
-  Future postEnvelope(Envelope envelope) async {
+  Future send(Packet envelope) async {
 //    List transfer;
 //    if (envelope.data is ByteBuffer) {
 //      transfer = [envelope.data];

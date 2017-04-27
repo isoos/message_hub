@@ -1,52 +1,32 @@
 import 'dart:async';
-import 'dart:collection';
+import 'dart:convert';
 
-/// A remote-aware message passing framework.
-abstract class MessageHub {
-  /// Registers an adapter for the [type]
-  void registerAdapter(String type, WireAdapter adapter);
+/// A generic messaging communication channel that
+abstract class Channel {
+  /// Subscribes to a specific topic.
+  /// When [inReplyTo] is specified, only packets that are responses to a
+  /// specific requests are returned.
+  Stream<Packet> getTopic(String topic, {String inReplyTo});
 
-  /// Sends a message
-  void sendMessage<T>(T message);
-
-  /// Gets the stream of messages for [type] that are not request-reply.
-  Stream<T> onMessage<T>(String type);
-
-  /// Register a handler.
-  void registerHandler<RQ, RS>(
-      String requestType, void handleRequest(RQ request, Sink<RS> replySink));
-
-  /// Invokes a remote handler that responds with a stream.
-  Stream<RS> invoke<RQ, RS>(RQ request);
-
-  /// Invokes a remote handler and return with its first reply.
-  Future<RS> call<RQ, RS>(RQ request);
+  /// Send a [Packet] to the other end.
+  FutureOr send(Packet packet);
 }
 
-abstract class WireAdapter<T, W> {
-  bool accept(T object);
+/// A bi-directional, full-duplex communication channel between two parts.
+abstract class DuplexChannel extends Channel {
+  /// The broadcast stream that emits values from the other endpoint.
+  Stream<Packet> get onPacket;
 
-  W encode(T object);
-  T decode(W data);
+  @override
+  Stream<Packet> getTopic(String topic, {String inReplyTo}) =>
+      onPacket.where((p) =>
+      (p.topic == topic) &&
+          (inReplyTo == null || inReplyTo == p.inReplyTo));
 }
 
-class IdentityAdapter<T> implements WireAdapter<T, T> {
-  @override
-  bool accept(T object) =>
-      object == null ||
-      (object is num) ||
-      (object is bool) ||
-      (object is String);
-
-  @override
-  T encode(T object) => object;
-
-  @override
-  T decode(T data) => data;
-}
-
-class Envelope {
-  final String type;
+///
+class Packet {
+  final String topic;
   final String requestId;
   final String inReplyTo;
   final String error;
@@ -55,195 +35,204 @@ class Envelope {
   // transient on the wire
   final dynamic client;
 
-  Envelope(
-    this.type, {
-    this.requestId,
-    this.inReplyTo,
-    this.error,
-    this.data,
-    this.isClose,
-    this.client,
-  });
+  Packet(
+      this.topic, {
+        this.requestId,
+        this.inReplyTo,
+        this.error,
+        this.data,
+        this.isClose,
+        this.client,
+      });
 
-  factory Envelope.fromMap(Map map, {dynamic client}) => new Envelope(
-        map['type'],
-        requestId: map['requestId'],
-        inReplyTo: map['inReplyTo'],
-        error: map['error'],
-        data: map['data'],
-        isClose: map['isClose'],
-        client: client,
-      );
+  factory Packet.fromMap(Map map, {dynamic client}) => new Packet(
+    map['topic'],
+    requestId: map['requestId'],
+    inReplyTo: map['inReplyTo'],
+    error: map['error'],
+    data: map['data'],
+    isClose: map['isClose'],
+    client: client,
+  );
 
   Map toMap() => {
-        'type': type,
-        'requestId': requestId,
-        'inReplyTo': inReplyTo,
-        'error': error,
-        'isClose': isClose,
-        'data': data,
-      };
+    'topic': topic,
+    'requestId': requestId,
+    'inReplyTo': inReplyTo,
+    'error': error,
+    'isClose': isClose,
+    'data': data,
+  };
 }
 
-abstract class MessageHubBase implements MessageHub {
-  List<_AdapterRegistration> _adapters = [];
-  int _requestCounter = 0;
+/// A single-parameter async function that returns a [Future].
+typedef Future<RS> UnaryHubFn<RQ, RS>(RQ request);
 
-  Stream<Envelope> get onEnvelope;
-  Future postEnvelope(Envelope message);
+/// A single-parameter async function that returns a [Stream].
+typedef Stream<RS> StreamHubFn<RQ, RS>(RQ request);
 
-  @override
-  void registerAdapter(String type, WireAdapter adapter) {
-    if (_adapters.any((r) => r.type == type)) {
-      throw new Exception(
-          'An Adapter has been already registered for type: $type.');
-    }
-    _adapters.add(new _AdapterRegistration(type, adapter));
-  }
+/// Handles [request] asynchronously, populating the [replySink] with one or
+/// more reply objects.
+/// Returns a [Future] that indicates the completion of the processing.
+typedef Future RequestHandler<RQ, RS>(RQ request, Sink<RS> replySink);
 
-  @override
-  void sendMessage<T>(T message) {
-    _AdapterRegistration ar = _selectRegistration(message);
-    postEnvelope(new Envelope(
-      ar.type,
-      data: ar.adapter.encode(message),
-    ));
-  }
+/// Convert [source] object to target type [T].
+typedef T Converter<S, T>(S source);
 
-  @override
-  Stream<T> onMessage<T>(String type) {
-    WireAdapter adapter = _selectAdapter(type);
-    return onEnvelope
-        .where((Envelope envelope) =>
-            envelope.type == type &&
-            envelope.inReplyTo == null &&
-            envelope.requestId == null)
-        .transform(new StreamTransformer.fromHandlers(
-            handleData: (Envelope envelope, EventSink<T> sink) {
-      if (envelope.isClose) {
-        // sink.close();
-        return;
-      }
-      if (envelope.error != null) {
-        sink.addError(envelope.error);
-        return;
-      }
-      sink.add(_decodeData(adapter, envelope.data));
-    }));
-  }
+/// Cancel the async task.
+typedef void Cancellable();
 
-  @override
-  Stream<RS> invoke<RQ, RS>(RQ request) {
-    _AdapterRegistration ar = _selectRegistration(request);
-    String requestId = _generateRequestId();
-    String responseType;
-    WireAdapter responseAdapter;
-    Stream<RS> stream = onEnvelope
-        .where((Envelope envelope) => envelope.inReplyTo == requestId)
-        .transform(new StreamTransformer.fromHandlers(
-            handleData: (Envelope envelope, EventSink<RS> sink) {
-      if (envelope.isClose) {
-        sink.close();
-        return;
-      }
-      if (envelope.error != null) {
-        sink.addError(envelope.error);
-        sink.close();
-        return;
-      }
-      if (responseAdapter == null) {
-        responseType = envelope.type;
-        responseAdapter = _selectAdapter(envelope.type);
-      } else if (responseType != envelope.type) {
-        throw new Exception('Type mismatch: $responseType != ${envelope.type}');
-      }
-      sink.add(_decodeData(responseAdapter, envelope.data));
-    }));
-    postEnvelope(new Envelope(
-      ar.type,
-      requestId: requestId,
-      data: ar.adapter.encode(request),
-    ));
-    return stream;
-  }
-
-  @override
-  Future<RS> call<RQ, RS>(RQ request) {
-    return invoke<RQ, RS>(request).first;
-  }
-
-  @override
-  void registerHandler<RQ, RS>(
-      String requestType, void handleRequest(RQ request, Sink<RS> replySink)) {
-    WireAdapter requestAdapter = _selectAdapter(requestType);
-    String responseType;
-    WireAdapter responseAdapter;
-    onEnvelope
-        .where((Envelope envelope) =>
-            envelope.type == requestType && envelope.requestId != null)
-        .listen((Envelope envelope) {
-      var data = _decodeData(requestAdapter, envelope.data);
-      StreamController<RS> controller = new StreamController();
-      controller.stream.listen((RS event) {
-        if (responseAdapter == null) {
-          _AdapterRegistration ar = _selectRegistration(event);
-          responseType = ar.type;
-          responseAdapter = ar.adapter;
-        }
-        postEnvelope(new Envelope(responseType,
-            inReplyTo: envelope.requestId,
-            data: responseAdapter.encode(event),
-            client: envelope.client));
-      }, onError: (e) {
-        postEnvelope(new Envelope(
-          responseType,
-          inReplyTo: envelope.requestId,
-          error: e.toString(),
-          client: envelope.client,
-        ));
-      }, onDone: () {
-        postEnvelope(new Envelope(responseType,
-            inReplyTo: envelope.requestId,
-            isClose: true,
-            client: envelope.client));
+/// Messaging service abstraction.
+abstract class MessageHub {
+  /// Listen on messages from [topic], calling the [requestHandler] function to
+  /// respond to each of these messages with zero, one or more replies.
+  ///
+  /// [requestDecoder] converts the wire-format (in [Packet]) to a typed object.
+  /// [replyEncoder] converts the typed reply object to the wire format.
+  ///
+  /// Returns a [Cancellable] callback to cancel the binding when it is no
+  /// longer required.
+  Cancellable listen<RQ, RS>(
+      String topic,
+      RequestHandler<RQ, RS> requestHandler, {
+        Converter<dynamic, RQ> requestDecoder,
+        Converter<RS, dynamic> replyEncoder,
       });
-      try {
-        handleRequest(data, controller.sink);
-      } catch (e) {
-        postEnvelope(new Envelope(
-          responseType,
-          inReplyTo: envelope.requestId,
-          error: e.toString(),
-          client: envelope.client,
-        ));
-        controller.close();
-      }
+
+  /// Returns a function that can be used to send a request to [topic] and
+  /// receives a single reply. (It will be processed on the other end by another
+  /// process calling [listen] on the [topic].)
+  ///
+  /// [requestEncoder] converts the typed request object to the wire format.
+  /// [replyDecoder] converts the wire-format (in [Packet]) to a typed object.
+  UnaryHubFn<RQ, RS> bindUnaryCaller<RQ, RS>(
+      String topic, {
+        Converter<RQ, dynamic> requestEncoder,
+        Converter<dynamic, RS> replyDecoder,
+      });
+
+  /// Returns a function that can be used to send a request to [topic] and
+  /// receives multiple replies. (It will be processed on the other end by
+  /// another process calling [listen] on the [topic].)
+  ///
+  /// [requestEncoder] converts the typed request object to the wire format.
+  /// [replyDecoder] converts the wire-format (in [Packet]) to a typed object.
+  StreamHubFn<RQ, RS> bindStreamCaller<RQ, RS>(
+      String topic, {
+        Converter<RQ, dynamic> requestEncoder,
+        Converter<dynamic, RS> replyDecoder,
+      });
+
+  /// Returns a [Sink] that can be used to send typed messages to the [topic].
+  ///
+  /// [encoder] converts the typed request object to the wire format.
+  Sink<T> getSink<T>(String topic, {Converter<T, dynamic> encoder});
+
+  /// Returns a [Stream] of typed messages from [topic].
+  ///
+  /// [decoder] converts the wire format to [T].
+  Stream<T> getStream<T>(String topic, {Converter<dynamic, T> decoder});
+}
+
+class _MessageHub implements MessageHub {
+  final Channel _channel;
+  _MessageHub(Channel channel) : _channel = channel;
+
+  @override
+  Cancellable listen<RQ, RS>(
+      String topic,
+      RequestHandler<RQ, RS> requestHandler, {
+        Converter<dynamic, RQ> requestDecoder,
+        Converter<RS, dynamic> replyEncoder,
+      }) {
+    return _channel.getTopic(topic).listen((Packet p) {
+      RQ request = requestDecoder != null ? requestDecoder(p.data) : p.data;
+      StreamController<RS> controller = new StreamController(sync: true);
+      controller.stream.listen((RS reply) {
+        var data = replyEncoder != null ? replyEncoder(reply) : reply;
+        _channel.send(new Packet(topic, inReplyTo: p.requestId, data: data));
+      }, onError: (e) {
+        _channel.send(
+            new Packet(topic, inReplyTo: p.requestId, error: e.toString()));
+      }, onDone: () {
+        _channel.send(new Packet(topic, inReplyTo: p.requestId, isClose: true));
+      });
+      Future f = requestHandler(request, controller) ?? new Future.value();
+      f.then((_) => null, onError: (e) {
+        _channel.send(
+            new Packet(topic, inReplyTo: p.requestId, error: e.toString()));
+      }).whenComplete(() {
+        if (!controller.isClosed) {
+          controller.close();
+        }
+      });
+    }).cancel;
+  }
+
+  @override
+  UnaryHubFn<RQ, RS> bindUnaryCaller<RQ, RS>(
+      String topic, {
+        Converter<RQ, dynamic> requestEncoder,
+        Converter<dynamic, RS> replyDecoder,
+      }) {
+    StreamHubFn<RQ, RS> fn = bindStreamCaller(topic,
+        requestEncoder: requestEncoder, replyDecoder: replyDecoder);
+    return (request) => fn(request).first;
+  }
+
+  @override
+  StreamHubFn<RQ, RS> bindStreamCaller<RQ, RS>(
+      String topic, {
+        Converter<RQ, dynamic> requestEncoder,
+        Converter<dynamic, RS> replyDecoder,
+      }) {
+    return (RQ request) {
+      String requestId = _newRequestId();
+      var data = requestEncoder != null ? requestEncoder(request) : request;
+      Stream<RS> stream = _channel
+          .getTopic(topic, inReplyTo: requestId)
+          .transform(new StreamTransformer.fromHandlers(
+        handleData: (Packet p, EventSink<RS> sink) {
+          if (p.error != null) {
+            sink.addError(p.error);
+          } else if (p.isClose) {
+            sink.close();
+          } else {
+            RS reply = replyDecoder != null ? replyDecoder(p.data) : p.data;
+            sink.add(reply);
+          }
+        },
+      ));
+      _channel.send(new Packet(topic, requestId: requestId, data: data));
+      return stream;
+    };
+  }
+
+  @override
+  Sink<T> getSink<T>(String topic, {Converter<T, dynamic> encoder}) {
+    final StreamController<T> controller = new StreamController<T>(sync: true);
+    controller.stream.listen((T data) {
+      var encodedData = (encoder != null) ? encoder(data) : data;
+      _channel.send(new Packet(topic, data: encodedData));
     });
+    return controller;
   }
 
-  WireAdapter _selectAdapter(String type) => _adapters
-      .firstWhere((r) => r.type == type,
-          orElse: () => throw new Exception('No adapter for type $type.'))
-      .adapter;
-
-  _AdapterRegistration _selectRegistration(dynamic object) =>
-      _adapters.firstWhere((r) => r.adapter.accept(object),
-          orElse: () =>
-              throw new Exception('No suitable adapter for $object.'));
-
-  dynamic _decodeData(WireAdapter adapter, dynamic data) {
-    if (data == null) return null;
-    return adapter == null ? data : adapter.decode(data);
-  }
-
-  String _generateRequestId() {
-    _requestCounter++;
-    return '$_requestCounter-${new DateTime.now().microsecondsSinceEpoch}';
+  @override
+  Stream<T> getStream<T>(String topic, {Converter<dynamic, T> decoder}) {
+    return _channel.getTopic(topic).transform(
+        new StreamTransformer.fromHandlers(
+            handleData: (Packet p, EventSink<T> sink) {
+              T decodedData;
+              if (decoder != null) {
+                decodedData = decoder(p.data);
+              } else {
+                decodedData = p.data;
+              }
+              sink.add(decodedData);
+            }));
   }
 }
 
-class _AdapterRegistration {
-  final String type;
-  final WireAdapter adapter;
-  _AdapterRegistration(this.type, this.adapter);
-}
+int _requestCounter = 0;
+String _newRequestId() => 'id${_requestCounter++}';

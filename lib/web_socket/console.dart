@@ -4,22 +4,22 @@ import 'dart:io';
 
 import '../message_hub.dart';
 
-class WebSocketConsoleMessageHub extends MessageHubBase {
+class WebSocketConsoleChannel extends DuplexChannel {
   final WebSocket _socket;
-  WebSocketConsoleMessageHub(this._socket);
+  WebSocketConsoleChannel(this._socket);
 
   @override
-  Stream<Envelope> get onEnvelope =>
+  Stream<Packet> get onPacket =>
       _socket.transform(new StreamTransformer.fromHandlers(
-          handleData: (event, EventSink<Envelope> sink) {
+          handleData: (event, EventSink<Packet> sink) {
         if (event is String) {
           Map map = JSON.decode(event);
-          sink.add(new Envelope.fromMap(map));
+          sink.add(new Packet.fromMap(map));
         }
       }));
 
   @override
-  Future postEnvelope(Envelope envelope) async {
+  Future send(Packet envelope) async {
     _socket.add(JSON.encode(envelope.toMap()));
   }
 }

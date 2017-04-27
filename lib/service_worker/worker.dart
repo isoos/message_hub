@@ -5,19 +5,19 @@ import '../message_hub.dart';
 
 import 'package:service_worker/worker.dart' as sw;
 
-class ServiceWorkerMessageHub extends MessageHubBase {
+class ServiceWorkerWorkerChannel extends DuplexChannel {
   @override
-  Stream<Envelope> get onEnvelope =>
+  Stream<Packet> get onPacket =>
       sw.onMessage.transform(new StreamTransformer.fromHandlers(handleData:
-          (sw.ExtendableMessageEvent event, EventSink<Envelope> sink) {
+          (sw.ExtendableMessageEvent event, EventSink<Packet> sink) {
         if (event.data is Map) {
           Map map = event.data;
-          sink.add(new Envelope.fromMap(map, client: event.source));
+          sink.add(new Packet.fromMap(map, client: event.source));
         }
       }));
 
   @override
-  Future postEnvelope(Envelope envelope) async {
+  Future send(Packet envelope) async {
     if (envelope.client != null) {
       List transfer;
       if (envelope.data is ByteBuffer) {

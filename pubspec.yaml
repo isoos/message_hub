@@ -9,3 +9,4 @@ dependencies:
 
 dev_dependencies:
   service_worker: ^0.0.8
+  stream_channel: ^1.6.1
