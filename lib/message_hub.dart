@@ -4,9 +4,13 @@ import 'dart:convert';
 /// A generic messaging communication channel that
 abstract class Channel {
   /// Subscribes to a specific topic.
-  /// When [inReplyTo] is specified, only packets that are responses to a
-  /// specific requests are returned.
-  Stream<Packet> getTopic(String topic, {String inReplyTo});
+  Stream<Packet> getTopic(String topic);
+
+  /// Subscribes to a specific topic, and returns the request objects on it.
+  Stream<Packet> getRequests(String topic);
+
+  /// Subscribes to a specific topic, and returns the request objects on it.
+  Stream<Packet> getReplies(String topic, String inReplyTo);
 
   /// Send a [Packet] to the other end.
   FutureOr send(Packet packet);
@@ -14,14 +18,24 @@ abstract class Channel {
 
 /// A bi-directional, full-duplex communication channel between two parts.
 abstract class DuplexChannel extends Channel {
+  Stream<Packet> _onPacketStream;
+
   /// The broadcast stream that emits values from the other endpoint.
   Stream<Packet> get onPacket;
 
   @override
-  Stream<Packet> getTopic(String topic, {String inReplyTo}) =>
-      onPacket.where((p) =>
-      (p.topic == topic) &&
-          (inReplyTo == null || inReplyTo == p.inReplyTo));
+  Stream<Packet> getTopic(String topic) {
+    _onPacketStream ??= onPacket.asBroadcastStream();
+    return _onPacketStream.where((p) => (p.topic == topic));
+  }
+
+  @override
+  Stream<Packet> getRequests(String topic) =>
+      getTopic(topic).where((p) => p.requestId != null && p.inReplyTo == null);
+
+  @override
+  Stream<Packet> getReplies(String topic, String inReplyTo) => getTopic(topic)
+      .where((p) => p.inReplyTo != null && p.inReplyTo == inReplyTo);
 }
 
 ///
@@ -36,33 +50,33 @@ class Packet {
   final dynamic client;
 
   Packet(
-      this.topic, {
-        this.requestId,
-        this.inReplyTo,
-        this.error,
-        this.data,
-        this.isClose,
-        this.client,
-      });
+    this.topic, {
+    this.requestId,
+    this.inReplyTo,
+    this.error,
+    this.data,
+    this.isClose,
+    this.client,
+  });
 
   factory Packet.fromMap(Map map, {dynamic client}) => new Packet(
-    map['topic'],
-    requestId: map['requestId'],
-    inReplyTo: map['inReplyTo'],
-    error: map['error'],
-    data: map['data'],
-    isClose: map['isClose'],
-    client: client,
-  );
+        map['topic'],
+        requestId: map['requestId'],
+        inReplyTo: map['inReplyTo'],
+        error: map['error'],
+        data: map['data'],
+        isClose: map['isClose'],
+        client: client,
+      );
 
   Map toMap() => {
-    'topic': topic,
-    'requestId': requestId,
-    'inReplyTo': inReplyTo,
-    'error': error,
-    'isClose': isClose,
-    'data': data,
-  };
+        'topic': topic,
+        'requestId': requestId,
+        'inReplyTo': inReplyTo,
+        'error': error,
+        'isClose': isClose,
+        'data': data,
+      };
 }
 
 /// A single-parameter async function that returns a [Future].
@@ -84,20 +98,23 @@ typedef void Cancellable();
 
 /// Messaging service abstraction.
 abstract class MessageHub {
+  /// Messaging service abstraction.
+  factory MessageHub(Channel channel) => new _MessageHub(channel);
+
   /// Listen on messages from [topic], calling the [requestHandler] function to
   /// respond to each of these messages with zero, one or more replies.
   ///
   /// [requestDecoder] converts the wire-format (in [Packet]) to a typed object.
   /// [replyEncoder] converts the typed reply object to the wire format.
   ///
-  /// Returns a [Cancellable] callback to cancel the binding when it is no
+  /// Returns a subscription object to cancel the binding when it is no
   /// longer required.
-  Cancellable listen<RQ, RS>(
-      String topic,
-      RequestHandler<RQ, RS> requestHandler, {
-        Converter<dynamic, RQ> requestDecoder,
-        Converter<RS, dynamic> replyEncoder,
-      });
+  StreamSubscription listen<RQ, RS>(
+    String topic,
+    RequestHandler<RQ, RS> requestHandler, {
+    Converter<dynamic, RQ> requestDecoder,
+    Converter<RS, dynamic> replyEncoder,
+  });
 
   /// Returns a function that can be used to send a request to [topic] and
   /// receives a single reply. (It will be processed on the other end by another
@@ -106,10 +123,10 @@ abstract class MessageHub {
   /// [requestEncoder] converts the typed request object to the wire format.
   /// [replyDecoder] converts the wire-format (in [Packet]) to a typed object.
   UnaryHubFn<RQ, RS> bindUnaryCaller<RQ, RS>(
-      String topic, {
-        Converter<RQ, dynamic> requestEncoder,
-        Converter<dynamic, RS> replyDecoder,
-      });
+    String topic, {
+    Converter<RQ, dynamic> requestEncoder,
+    Converter<dynamic, RS> replyDecoder,
+  });
 
   /// Returns a function that can be used to send a request to [topic] and
   /// receives multiple replies. (It will be processed on the other end by
@@ -118,10 +135,10 @@ abstract class MessageHub {
   /// [requestEncoder] converts the typed request object to the wire format.
   /// [replyDecoder] converts the wire-format (in [Packet]) to a typed object.
   StreamHubFn<RQ, RS> bindStreamCaller<RQ, RS>(
-      String topic, {
-        Converter<RQ, dynamic> requestEncoder,
-        Converter<dynamic, RS> replyDecoder,
-      });
+    String topic, {
+    Converter<RQ, dynamic> requestEncoder,
+    Converter<dynamic, RS> replyDecoder,
+  });
 
   /// Returns a [Sink] that can be used to send typed messages to the [topic].
   ///
@@ -139,13 +156,13 @@ class _MessageHub implements MessageHub {
   _MessageHub(Channel channel) : _channel = channel;
 
   @override
-  Cancellable listen<RQ, RS>(
-      String topic,
-      RequestHandler<RQ, RS> requestHandler, {
-        Converter<dynamic, RQ> requestDecoder,
-        Converter<RS, dynamic> replyEncoder,
-      }) {
-    return _channel.getTopic(topic).listen((Packet p) {
+  StreamSubscription listen<RQ, RS>(
+    String topic,
+    RequestHandler<RQ, RS> requestHandler, {
+    Converter<dynamic, RQ> requestDecoder,
+    Converter<RS, dynamic> replyEncoder,
+  }) {
+    return _channel.getRequests(topic).listen((Packet p) {
       RQ request = requestDecoder != null ? requestDecoder(p.data) : p.data;
       StreamController<RS> controller = new StreamController(sync: true);
       controller.stream.listen((RS reply) {
@@ -159,22 +176,22 @@ class _MessageHub implements MessageHub {
       });
       Future f = requestHandler(request, controller) ?? new Future.value();
       f.then((_) => null, onError: (e) {
-        _channel.send(
-            new Packet(topic, inReplyTo: p.requestId, error: e.toString()));
+        _channel.send(new Packet(topic,
+            inReplyTo: p.requestId, error: e.toString(), isClose: true));
       }).whenComplete(() {
         if (!controller.isClosed) {
           controller.close();
         }
       });
-    }).cancel;
+    });
   }
 
   @override
   UnaryHubFn<RQ, RS> bindUnaryCaller<RQ, RS>(
-      String topic, {
-        Converter<RQ, dynamic> requestEncoder,
-        Converter<dynamic, RS> replyDecoder,
-      }) {
+    String topic, {
+    Converter<RQ, dynamic> requestEncoder,
+    Converter<dynamic, RS> replyDecoder,
+  }) {
     StreamHubFn<RQ, RS> fn = bindStreamCaller(topic,
         requestEncoder: requestEncoder, replyDecoder: replyDecoder);
     return (request) => fn(request).first;
@@ -182,22 +199,24 @@ class _MessageHub implements MessageHub {
 
   @override
   StreamHubFn<RQ, RS> bindStreamCaller<RQ, RS>(
-      String topic, {
-        Converter<RQ, dynamic> requestEncoder,
-        Converter<dynamic, RS> replyDecoder,
-      }) {
+    String topic, {
+    Converter<RQ, dynamic> requestEncoder,
+    Converter<dynamic, RS> replyDecoder,
+  }) {
     return (RQ request) {
       String requestId = _newRequestId();
       var data = requestEncoder != null ? requestEncoder(request) : request;
       Stream<RS> stream = _channel
-          .getTopic(topic, inReplyTo: requestId)
+          .getReplies(topic, requestId)
           .transform(new StreamTransformer.fromHandlers(
         handleData: (Packet p, EventSink<RS> sink) {
           if (p.error != null) {
             sink.addError(p.error);
-          } else if (p.isClose) {
+          }
+          if (p.isClose == true) {
             sink.close();
-          } else {
+          }
+          if (p.error == null && p.isClose != true) {
             RS reply = replyDecoder != null ? replyDecoder(p.data) : p.data;
             sink.add(reply);
           }
@@ -223,14 +242,14 @@ class _MessageHub implements MessageHub {
     return _channel.getTopic(topic).transform(
         new StreamTransformer.fromHandlers(
             handleData: (Packet p, EventSink<T> sink) {
-              T decodedData;
-              if (decoder != null) {
-                decodedData = decoder(p.data);
-              } else {
-                decodedData = p.data;
-              }
-              sink.add(decodedData);
-            }));
+      T decodedData;
+      if (decoder != null) {
+        decodedData = decoder(p.data);
+      } else {
+        decodedData = p.data;
+      }
+      sink.add(decodedData);
+    }));
   }
 }
 
