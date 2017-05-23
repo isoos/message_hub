@@ -24,7 +24,7 @@ class IsolateChannel extends DuplexChannel {
       }));
 
   @override
-  FutureOr send(Packet packet) {
+  Future send(Packet packet) {
     _sendPort.send(packet.toMap());
     return null;
   }

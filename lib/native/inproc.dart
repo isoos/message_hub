@@ -9,7 +9,7 @@ class InprocChannel extends DuplexChannel {
   Stream<Packet> get onPacket => _controller.stream;
 
   @override
-  FutureOr send(Packet packet) {
+  Future send(Packet packet) {
     _controller.add(packet);
     return null;
   }

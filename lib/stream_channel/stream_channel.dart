@@ -11,5 +11,7 @@ class StreamChannelAdapter extends DuplexChannel {
   Stream<Packet> get onPacket => packetChannel.stream;
 
   @override
-  FutureOr send(Packet packet) => packetChannel.sink.add(packet);
+  Future send(Packet packet) {
+    packetChannel.sink.add(packet);
+  }
 }

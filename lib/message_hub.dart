@@ -3,17 +3,15 @@ import 'dart:convert';
 
 /// A generic messaging communication channel that
 abstract class Channel {
-  /// Subscribes to a specific topic.
-  Stream<Packet> getTopic(String topic);
+  /// Send a [Packet] to the other party.
+  Future send(Packet packet);
 
-  /// Subscribes to a specific topic, and returns the request objects on it.
-  Stream<Packet> getRequests(String topic);
-
-  /// Subscribes to a specific topic, and returns the request objects on it.
-  Stream<Packet> getReplies(String topic, String inReplyTo);
-
-  /// Send a [Packet] to the other end.
-  FutureOr send(Packet packet);
+  /// Gets a Stream for the specific topic.
+  ///
+  /// When [inReplyTo] is missing, it returns only the requests.
+  /// When [inReplyTo] is specified, it returns only the ones that are a reply
+  /// to the specified request.
+  Stream<Packet> receive(String topic, {String inReplyTo});
 }
 
 /// A bi-directional, full-duplex communication channel between two parts.
@@ -24,18 +22,16 @@ abstract class DuplexChannel extends Channel {
   Stream<Packet> get onPacket;
 
   @override
-  Stream<Packet> getTopic(String topic) {
+  Stream<Packet> receive(String topic, {String inReplyTo}) {
     _onPacketStream ??= onPacket.asBroadcastStream();
-    return _onPacketStream.where((p) => (p.topic == topic));
+    Stream<Packet> stream = _onPacketStream.where((p) => (p.topic == topic));
+    if (inReplyTo == null) {
+      stream = stream.where((p) => p.inReplyTo == null);
+    } else {
+      stream = stream.where((p) => p.inReplyTo == inReplyTo);
+    }
+    return stream;
   }
-
-  @override
-  Stream<Packet> getRequests(String topic) =>
-      getTopic(topic).where((p) => p.requestId != null && p.inReplyTo == null);
-
-  @override
-  Stream<Packet> getReplies(String topic, String inReplyTo) => getTopic(topic)
-      .where((p) => p.inReplyTo != null && p.inReplyTo == inReplyTo);
 }
 
 ///
@@ -162,7 +158,7 @@ class _MessageHub implements MessageHub {
     Converter<dynamic, RQ> requestDecoder,
     Converter<RS, dynamic> replyEncoder,
   }) {
-    return _channel.getRequests(topic).listen((Packet p) {
+    return _channel.receive(topic).listen((Packet p) {
       RQ request = requestDecoder != null ? requestDecoder(p.data) : p.data;
       StreamController<RS> controller = new StreamController(sync: true);
       controller.stream.listen((RS reply) {
@@ -207,7 +203,7 @@ class _MessageHub implements MessageHub {
       String requestId = _newRequestId();
       var data = requestEncoder != null ? requestEncoder(request) : request;
       Stream<RS> stream = _channel
-          .getReplies(topic, requestId)
+          .receive(topic, inReplyTo: requestId)
           .transform(new StreamTransformer.fromHandlers(
         handleData: (Packet p, EventSink<RS> sink) {
           if (p.error != null) {
@@ -239,9 +235,8 @@ class _MessageHub implements MessageHub {
 
   @override
   Stream<T> getStream<T>(String topic, {Converter<dynamic, T> decoder}) {
-    return _channel.getTopic(topic).transform(
-        new StreamTransformer.fromHandlers(
-            handleData: (Packet p, EventSink<T> sink) {
+    return _channel.receive(topic).transform(new StreamTransformer.fromHandlers(
+        handleData: (Packet p, EventSink<T> sink) {
       T decodedData;
       if (decoder != null) {
         decodedData = decoder(p.data);
